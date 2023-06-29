@@ -1,0 +1,23 @@
+# Terraform
+.terraform
+*.tfstate
+*.tfstate.backup
+
+# Terragrunt
+.terragrunt-cache
+*.lock.hcl
+
+# OS X
+.history
+.DS_Store
+
+# Misc
+.secret.tfvars
+.env
+.idea
+.vscode
+build
+
+# Terragrunt
+**/backend.tf
+**/versions.tf
