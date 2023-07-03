@@ -125,33 +125,24 @@ Script:main() {
     [[ $ignoreDeps > 0 ]] && tgopt="$tgopt --terragrunt-ignore-external-dependencies --terragrunt-ignore-dependency-errors"
 
     case $action in
-    taint | untaint)
+    taint | untaint | state-rm)
       #TIP:> taint | untaint dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «taint | untaint» to taint a resource
       [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       [[ -z "$block" ]] && IO:die "option [block] can't be empty with action [$action]"
+      tgopt="$tgopt --terragrunt-no-auto-init"
       if [[ $block == *"*" ]]; then
-        for i in $(eval "$tgcmd state list $tgopt" | grep -vE "^data\.|\.data\." | grep -v "^$block"); do
-          eval "$tgcmd $action $i $tgopt";
+        # [turn] => ["turn"] & module.res => module\.re & [xxx] => \[xxx\]
+        escaped_string=$(echo "$block" | sed -e 's/\[\([a-z]*\)\]/["\1"]/g' -e 's/\./\\./g' -e 's/\[/\\[/g' -e 's/\]/\\]/g')
+        IO:debug "$escaped_string"
+        for i in $(eval "$tgcmd state list $tgopt" | grep -vE "^data\.|\.data\." | grep "^$escaped_string"); do
+          # ["turn"] => [\"turn\"]
+          i=$(echo "$i" | sed -e 's/"/\\"/g')
+          IO:debug "$i"
+          eval "$tgcmd $action $i $tgopt"
         done
       else
         eval "$tgcmd $action $block $tgopt"
-      fi
-      ;;
-
-    state-rm)
-      #TIP:> state-rm dev/cloud/eks/aws_s3_bucket.storage
-      #TIP: use «state-rm» to remove resource from terraform state
-      tgopt="$tgopt --terragrunt-no-auto-init"
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
-      [[ -z "$block" ]] && IO:die "option [block] can't be empty with action [$action]"
-      if [[ $block == *"*" ]]; then
-        for i in $(eval "$tgcmd state list $tgopt" | grep -vE "^data\.|\.data\." | grep -v "^$block"); do
-          eval "$tgcmd state rm $i $tgopt";
-          IO:print "state rm $i";
-        done
-      else
-        eval "$tgcmd state rm $block $tgopt"
       fi
       ;;
 
