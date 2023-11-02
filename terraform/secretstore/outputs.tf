@@ -11,13 +11,5 @@ output "dockerconfigjson" {
 
 output "dns_solver_token" {
   sensitive = true
-  value     = var.cloudflare_api_token
-}
-
-output "noreplay_email_credentials" {
-  sensitive = true
-  value = {
-    "email" : var.noreply_email
-    "password" : var.noreply_email_password
-  }
+  value     = var.dns_solver_token
 }

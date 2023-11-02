@@ -25,8 +25,6 @@ No resources.
 | <a name="input_docker_registry_endpoint"></a> [docker\_registry\_endpoint](#input\_docker\_registry\_endpoint) | n/a | `string` | n/a | yes |
 | <a name="input_docker_registry_password"></a> [docker\_registry\_password](#input\_docker\_registry\_password) | n/a | `string` | n/a | yes |
 | <a name="input_docker_registry_username"></a> [docker\_registry\_username](#input\_docker\_registry\_username) | n/a | `string` | n/a | yes |
-| <a name="input_noreply_email"></a> [noreply\_email](#input\_noreply\_email) | n/a | `string` | n/a | yes |
-| <a name="input_noreply_email_password"></a> [noreply\_email\_password](#input\_noreply\_email\_password) | n/a | `string` | n/a | yes |
 
 ## Outputs
 

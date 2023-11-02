@@ -51,12 +51,12 @@ flag|q|quiet|supress messages
 flag|y|yes|do not ask for confirmation (always yes)
 flag|I|ignoreDeps|ignore dependencies
 choice|1|action|action to perform|plan, apply, destroy,\
-  clean, format,\
-  output, validate-inputs, validate-hcl\
+  clean, format, check\
+  output, validate, validate-inputs, validate-hcl,\
   state-rm, state-list, state-show,\
-  upgrade, reconfigure, taint, untaint,\
-  kubeconfig
-param|?|args|<env>/<hive>/<module>/<block>
+  init, upgrade, reconfigure, taint, untaint,\
+  kubeconfig, dependencies, delete-namespace
+param|?|args|<env>/<hive>:<block>
 " grep -v -e '^#' -e '^\s*$'
 }
 
@@ -79,8 +79,8 @@ Script:main() {
   clean)
     #TIP:> clean
     #TIP: use «clean» to delete the cache: terragrunt-cache and terraform.lock.hcl
-    find ./terrahive -type f -name ".terraform.lock.hcl" -prune -exec rm -rf {} \;
-    find ./terrahive -type d -name ".terragrunt-cache" -prune -exec rm -rf {} \;
+    find ./ -type f -name ".terraform.lock.hcl" -prune -exec rm -rf {} \;
+    find ./ -type d -name ".terragrunt-cache" -prune -exec rm -rf {} \;
     ;;
   format)
     #TIP:> format
@@ -97,38 +97,60 @@ Script:main() {
       ./tfgh -q validate-hcl $(dirname $i);
     done
     ;;
+  kubeconfig)
+    #TIP:> kubeconfig <cluster-name>
+    #TIP: use «kubeconfig» to update
+    Os:require "aws"
+    Os:require "kubectl"
+    local role_arn=$(aws sts get-caller-identity | jq .Arn)
+    aws eks update-kubeconfig --name $args --alias $KUBE_CTX --role-arn=$role_arn
+    ;;
+  delete-namespace)
+    NAMESPACE=$args
+    tempf=$(Os:tempfile)
+    kubectl proxy &
+    kubectl get namespace $NAMESPACE -o json | jq '.spec = {"finalizers":[]}' > $tempf
+    curl -k -H "Content-Type: application/json" -X PUT --data-binary @$tempf 127.0.0.1:8001/api/v1/namespaces/$NAMESPACE/finalize
+    pkill -9 -f "kubectl proxy"
+    ;;
+  
+  check)
+    Script:check
+    ;;
+    
   *)
-    IFS="/" read -r env hive module block <<< "$args"
-    IO:debug "env:    $env"
-    IO:debug "hive:   $hive"
+    IFS=":" read -r module block <<< "$args"
     IO:debug "module: $module"
     IO:debug "block:  $block"
 
-    [[ ! -d "./terrahive/$env/$hive" ]] && IO:die "Hive [$hive] does not exist"
-    [[ ! -d "./terrahive/$env/$hive/$module" ]] && IO:die "Module [$module] does not exist"
+    workdir=./terrahive/$module
+    [[ ! -d "$workdir" ]] && IO:die "Module [$module] does not exist"
 
-    workdir=./terrahive/$env/$hive
+    IFS="/" read -r cloud env hive <<< "$module"
+    IO:debug "cloud: $cloud"
+    IO:debug "env:   $env"
+    IO:debug "hive:  $hive"
 
+    export TF_VAR_cloud=$cloud
     export TF_VAR_env=$env
     export TF_VAR_hive=$hive
-    export TERRAGRUNT_DOWNLOAD=$workdir/.terragrunt-cache
+    export TERRAGRUNT_WORKING_DIR=$workdir
     export TERRAGRUNT_FETCH_DEPENDENCY_OUTPUT_FROM_STATE=true
-    export TERRAGRUNT_USE_PARTIAL_PARSE_CONFIG_CACHE=true
-    export TF_INPUT=false
-    export TF_IN_AUTOMATION=1
+    export TERRAGRUNT_USE_PARTIAL_PARSE_CONFIG_CACHE=false
+    export TERRAGRUNT_IAM_ASSUME_ROLE_SESSION_NAME=terragrunt
+    [[ $yes > 0 ]] && export TF_INPUT=false && export TF_IN_AUTOMATION=1
     [[ $verbose > 0 ]] && export TERRAGRUNT_LOG_LEVEL=debug && export TF_LOG_PROVIDER=debug
 
-    tgcmd="terragrunt run-all"
-    tgopt="--terragrunt-working-dir $workdir"
-    [[ $module ]] && tgcmd="terragrunt" && tgopt="--terragrunt-working-dir $workdir/$module"
-    [[ $yes > 0 ]] && tgopt="$tgopt --terragrunt-non-interactive"
-    [[ $ignoreDeps > 0 ]] && tgopt="$tgopt --terragrunt-ignore-external-dependencies --terragrunt-ignore-dependency-errors"
+    tgcmd="terragrunt"
+    [[ ! -f "$workdir/terragrunt.hcl" ]] && tgcmd="terragrunt run-all"
+    
+    tgopt=""
+    [[ $ignoreDeps > 0 ]] && tgopt="--terragrunt-ignore-external-dependencies --terragrunt-ignore-dependency-errors"
 
     case $action in
     taint | untaint | state-rm)
       #TIP:> taint | untaint dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «taint | untaint» to taint a resource
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       [[ -z "$block" ]] && IO:die "option [block] can't be empty with action [$action]"
       tgopt="$tgopt --terragrunt-no-auto-init"
       if [[ $block == *"*" ]]; then
@@ -149,7 +171,6 @@ Script:main() {
     state-show)
       #TIP:> state-show dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «state-show» to show the state of a resource
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       [[ -z "$block" ]] && IO:die "option [block] can't be empty with action [$action]"
       eval "$tgcmd state show $block $tgopt"
       ;;
@@ -157,7 +178,6 @@ Script:main() {
     state-list)
       #TIP:> state-list dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «state-list» to list resources in module
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       tfcmd="state list"
       [[ $block ]] && tfcmd="$tfcmd $block"
       eval "$tgcmd $tfcmd $tgopt"
@@ -166,7 +186,6 @@ Script:main() {
     validate-inputs)
       #TIP:> validate-inputs dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «validate-inputs» to validate inputs of module
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       eval "$tgcmd validate-inputs $tgopt"
       ;;
 
@@ -181,7 +200,6 @@ Script:main() {
       #TIP: use «output» to list outputs of module
       #TIP: use «output» with block to reveal sensitive outputs
       tgopt="$tgopt --terragrunt-no-auto-init"
-      [[ -z "$module" ]] && IO:die "option [module] can't be empty with action [$action]"
       if [[ $block == "*" ]]; then
         for i in $(eval "$tgcmd output $tgopt" | awk -F'[ = ]' '{print $1}'); do
           IO:print "$i=$(eval "$tgcmd output $i $tgopt")";
@@ -189,6 +207,10 @@ Script:main() {
       else
         eval "$tgcmd output $block $tgopt"
       fi
+      ;;
+    
+    init)
+      eval "$tgcmd init $tgopt"
       ;;
 
     upgrade | reconfigure)
@@ -201,13 +223,18 @@ Script:main() {
       #TIP:> plan | apply | destroy dev/cloud/eks/aws_s3_bucket.storage
       #TIP: use «plan | apply | destroy» to run terragrunt <action>
       tfcmd=$action
-      [[ $block ]] && tfcmd="$tfcmd --target $block"
+      if [[ -n "$block" ]]; then
+        block=$(echo "$block" | sed -e 's/\[\([a-z]*\)\]/[\\"\1\\"]/g')
+        tfcmd="$tfcmd --target $block"
+        IO:print $tfcmd
+      fi
       [[ $yes > 0 ]] && [[ $action != "plan" ]] && tfcmd="$tfcmd -auto-approve"
       eval "$tgcmd $tfcmd $tgopt"
       ;;
-
-    check)
-      Script:check
+    dependencies)
+      #TIP:> dependencies
+      #TIP: use «dependencies» to list dependencies
+      eval "terragrunt graph-dependencies $tgopt"
       ;;
 
     *)
@@ -261,7 +288,7 @@ Args:optional_kwarg() {
 
 # set strict mode -  via http://redsymbol.net/articles/unofficial-bash-strict-mode/
 # removed -e because it made basic [[ testing ]] difficult
-set -uo pipefail
+set -euo pipefail
 IFS=$'\n\t'
 force=0
 help=0
@@ -269,14 +296,15 @@ error_prefix=""
 
 #to enable verbose even before option parsing
 verbose=0
-[[ $# -gt 0 ]] && [[ $1 == "-v" ]] && verbose=1
+if [[ $# -gt 0 ]]; then [[ $1 == "-v" ]] && verbose=1; fi
 
 #to enable quiet even before option parsing
 quiet=0
-[[ $# -gt 0 ]] && [[ $1 == "-q" ]] && quiet=1
+if [[ $# -gt 0 ]]; then [[ $1 == "-q" ]] && quiet=1; fi
 
 ### stdIO:print/stderr output
 function IO:initialize() {
+  set +e
   [[ "${BASH_SOURCE[0]:-}" != "${0}" ]] && sourced=1 || sourced=0
   [[ -t 1 ]] && piped=0 || piped=1 # detect if output is piped
   if [[ $piped -eq 0 ]]; then
@@ -319,10 +347,11 @@ function IO:initialize() {
     require_icon="[r]"
   fi
   error_prefix="${txtError}>${txtReset}"
+  set -e
 }
 
 function IO:print() {
-  ((quiet)) && true || printf '%b\n' "$*"
+  ((quiet)) && true || printf '%b\n' "$*" >&2
   }
 
 function IO:debug() {
@@ -395,7 +424,7 @@ function IO:question() {
 }
 
 function IO:log() {
-  [[ -n "${log_file:-}" ]] && echo "$(date '+%H:%M:%S') | $*" >> "$log_file"
+  if [[ -n "${log_file:-}" ]]; then echo "$(date '+%H:%M:%S') | $*" >> "$log_file"; fi
 }
 
 function Tool:calc() {
@@ -514,9 +543,7 @@ function Gha:finish(){
 }
 
 trap "IO:die \"ERROR \$? after \$SECONDS seconds \n\
-\${error_prefix} last command : '\$BASH_COMMAND' \" \
-\$(< \$script_install_path awk -v lineno=\$LINENO \
-'NR == lineno {print \"\${error_prefix} from line \" lineno \" : \" \$0}')" INT TERM EXIT
+\${error_prefix} last command : '\$BASH_COMMAND' \"" INT TERM EXIT
 # cf https://askubuntu.com/questions/513932/what-is-the-bash-command-variable-good-for
 
 Script:exit() {
@@ -831,16 +858,14 @@ function Option:parse() {
     IO:debug "$config_icon Expect : $option_count choice(s): $option_list"
     [[ $# -eq 0 ]] && IO:die "need the choice(s) [$option_list]"
 
-  local choices_list
-  local valid_choice
+    local choices_list
     for param in $choices; do
       [[ $# -eq 0 ]] && IO:die "need choice [$param]"
       [[ -z "$1" ]]  && IO:die "need choice [$param]"
       IO:debug "$config_icon Assign : $param=$1"
       # check if choice is in list
       choices_list=$(Option:config | awk -F"|" -v choice="$param"  '$1 == "choice" && $3 = choice {print $5}')
-      valid_choice=$(<<< "$choices_list" tr "," "\n" | grep "$1")
-      [[ -z "$valid_choice" ]] && IO:die "choice [$1] is not valid, should be in list [$choices_list]"
+      [[ -z "$(<<< "$choices_list" tr "," "\n" | grep "$1")" ]] && IO:die "choice [$1] is not valid, should be in list [$choices_list]"
 
       eval "$param=\"$1\""
       shift
@@ -881,6 +906,10 @@ function Option:parse() {
     IO:debug "$config_icon Expect : $optional_count optional parameter(s): $(echo "$optional_params" | xargs)"
 
     for param in $optional_params; do
+      if [[ $# -eq 0 ]]; then
+        ## all parameters processed
+        break
+      fi
       IO:debug "$config_icon Assign : $param=${1:-}"
       eval "$param=\"${1:-}\""
       shift
@@ -907,7 +936,7 @@ function Option:parse() {
   else
     multi_count=0
     multi_param=""
-    [[ $# -gt 0 ]] && IO:die "cannot interpret extra parameters"
+    if [[ $# -gt 0 ]]; then IO:die "cannot interpret extra parameters"; fi
   fi
 }
 
@@ -917,6 +946,7 @@ function Os:require() {
   local words
   local path_binary
   # $1 = binary that is required
+  IO:debug "check required binary $1"
   binary="$1"
   path_binary=$(command -v "$binary" 2>/dev/null)
   [[ -n "$path_binary" ]] && IO:debug "️$require_icon required [$binary] -> $path_binary" && return 0
@@ -1113,7 +1143,7 @@ function Script:meta() {
   # get script version from VERSION.md file - which is automatically updated by pforret/setver
   [[ -f "$script_install_folder/VERSION.md" ]] && script_version=$(cat "$script_install_folder/VERSION.md")
   # get script version from git tag file - which is automatically updated by pforret/setver
-  [[ -n "$git_repo_root" ]] && [[ -n "$(git tag &>/dev/null)" ]] && script_version=$(git tag --sort=version:refname | tail -1)
+  [[ -n "$git_repo_root" ]] && if [[ -n "$(git tag &>/dev/null)" ]]; then script_version=$(git tag --sort=version:refname | tail -1); fi
 }
 
 function Script:initialize() {

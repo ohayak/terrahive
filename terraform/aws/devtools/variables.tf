@@ -1,6 +1,5 @@
-variable "dns_solver_token" {
-  type      = string
-  sensitive = true
+variable "domain" {
+  type = string
 }
 
 variable "docker_registry_password" {
